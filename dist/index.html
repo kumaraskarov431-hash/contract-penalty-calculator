@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Калькулятор пени по договорам. Автономный расчёт в браузере.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file:; script-src 'self' file:; style-src 'self' 'unsafe-inline' file:; img-src 'self' file: data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Калькулятор пени по договорам | Казахтелеком</title>
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="vendor/decimal.js"></script>
+  <script defer src="vendor/exceljs.min.js"></script>
+  <script defer src="vendor/lucide.js"></script>
+  <script defer src="core.js"></script>
+  <script defer src="excel-template.js"></script>
+  <script defer src="report.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <div id="application">
+    <header class="masthead">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">KT</span><div><strong>Казахтелеком</strong><span>Дирекция управления проектами</span></div></div>
+      <span class="privacy"><i data-lucide="shield-check"></i> Локальный расчёт</span>
+    </header>
+    <main>
+      <div class="page-heading"><p class="eyebrow">ОТДЕЛ СОПРОВОЖДЕНИЯ ДОГОВОРОВ</p><h1>Калькулятор пени по договорам</h1><p class="organization">АО «Казахтелеком»</p></div>
+      <div id="example-banner" class="notice example" hidden><i data-lucide="flask-conical"></i><span><strong>Учебный пример.</strong> Все договорные данные вымышлены.</span></div>
+      <div class="workspace">
+        <form id="calculator" novalidate>
+          <section class="form-section">
+            <h2><span class="section-number">01</span> Договор</h2>
+            <div class="grid two"><label>Номер договора<input id="contractNumber" maxlength="160" placeholder="Например, ДП-2024/015" autocomplete="off"></label><label>Контрагент<input id="counterparty" maxlength="300" placeholder="Наименование организации" autocomplete="off"></label></div>
+            <label>Предмет договора<textarea id="subject" rows="2" maxlength="2000" placeholder="Работы, услуги или поставка"></textarea></label>
+            <label>Пункт договора о пене (необязательно)<textarea id="penaltyClause" rows="2" maxlength="4000" placeholder="Основание и условия начисления пени"></textarea></label>
+            <label class="half">Сумма договора, ₸<input id="contractAmount" class="number" inputmode="decimal" placeholder="0,00" required></label>
+          </section>
+          <section class="form-section">
+            <h2><span class="section-number">02</span> Условия начисления</h2>
+            <div class="segmented" role="group" aria-label="Режим расчёта"><button type="button" class="selected" id="mode-simple" aria-pressed="true"><i data-lucide="calculator"></i> Единая база</button><button type="button" id="mode-periods" aria-pressed="false"><i data-lucide="layers-2"></i> По периодам</button></div>
+            <div id="simple-fields">
+              <label>База начисления пени<select id="baseType"><option value="contract">Вся сумма договора</option><option value="obligations">Стоимость неисполненных обязательств</option><option value="manual">Сумма, введённая вручную</option></select></label>
+              <div class="grid two"><label id="manual-base-field" hidden>База начисления, ₸<input id="manualBase" inputmode="decimal" placeholder="0,00"></label><label>Ставка за день, %<input id="rate" inputmode="decimal" placeholder="По условиям договора" required></label></div>
+            </div>
+            <div id="obligations-field" hidden><label class="half">Неисполненные обязательства, ₸<input id="obligationAmount" inputmode="decimal" placeholder="0,00"></label></div>
+            <div id="period-fields" hidden><div id="period-list"></div><button class="text-button" type="button" id="add-period"><i data-lucide="plus"></i> Добавить интервал</button></div>
+          </section>
+          <section class="form-section">
+            <h2><span class="section-number">03</span> Срок исполнения</h2>
+            <label>Конечная дата<select id="endType"><option value="actual">Фактическая дата исполнения</option><option value="asof">Дата, на которую производится расчёт</option></select></label>
+            <div class="grid two"><label>Установленный срок<input id="dueDate" class="date-input" inputmode="numeric" maxlength="10" placeholder="ДД.ММ.ГГГГ" required></label><label><span id="end-label">Фактическая дата исполнения</span><input id="endDate" class="date-input" inputmode="numeric" maxlength="10" placeholder="ДД.ММ.ГГГГ" required></label></div>
+            <label class="switch-row"><input type="checkbox" id="includeEnd" checked><span class="switch" aria-hidden="true"></span><span>Включать дату исполнения в расчёт</span></label>
+            <div class="date-strip"><i data-lucide="calendar-days"></i><span id="date-hint">Начало просрочки: следующий день после срока исполнения.</span></div>
+          </section>
+          <section class="form-section">
+            <div class="section-heading"><h2><span class="section-number">04</span> Исключаемые периоды</h2><span class="optional">Необязательно</span></div>
+            <div id="exclusion-list"></div><button class="text-button" type="button" id="add-exclusion"><i data-lucide="plus"></i> Добавить исключение</button>
+          </section>
+          <section class="form-section last">
+            <h2><span class="section-number">05</span> Ограничение пени</h2>
+            <label>Максимальный размер<select id="capType"><option value="none">Без ограничения</option><option value="fixed">Фиксированная сумма</option><option value="percent">Процент от выбранной базы</option></select></label>
+            <label class="half" id="cap-fixed-field" hidden>Сумма ограничения, ₸<input id="capAmount" inputmode="decimal" placeholder="0,00"></label>
+            <div id="cap-percent-fields" hidden><div class="grid two"><label>Размер ограничения, %<input id="capPercent" inputmode="decimal" placeholder="По условиям договора"></label><label>База ограничения<select id="capBaseType"><option value="contract">Сумма договора</option><option value="obligations">Неисполненные обязательства</option><option value="manual">Отдельная сумма</option></select></label></div><label class="half" id="cap-manual-field" hidden>База ограничения, ₸<input id="capManualBase" inputmode="decimal" placeholder="0,00"></label></div>
+          </section>
+          <div id="validation" class="notice error" role="alert" hidden></div>
+          <div class="form-actions"><button class="primary" type="submit"><i data-lucide="calculator"></i> Рассчитать</button><button class="secondary" type="button" id="clear"><i data-lucide="rotate-ccw"></i> Очистить</button></div>
+          <button class="example-button" type="button" id="example"><i data-lucide="flask-conical"></i> Заполнить учебный пример</button>
+        </form>
+        <aside class="results" aria-label="Результат расчёта">
+          <div class="result-heading"><h2>Результат расчёта</h2><span class="status" id="result-status">Не рассчитано</span></div>
+          <div id="stale" class="notice warning" hidden><i data-lucide="refresh-cw"></i><span>Данные изменены. Нажмите «Рассчитать» для обновления.</span></div>
+          <div class="total-card"><div class="total-label">Итоговая пеня<span class="currency-tag">KZT</span></div><div class="total-value" id="total">0,00 <span>₸</span></div><div class="total-caption" id="total-caption">Ожидает расчёта</div></div>
+          <div id="result-content"><div class="empty-result"><i data-lucide="file-spreadsheet"></i><strong>Расчёт ещё не выполнен</strong><span>Исходные данные не заполнены</span></div></div>
+          <div class="export-actions"><button class="secondary" id="copy" type="button" disabled><i data-lucide="copy"></i> Скопировать расчёт</button><button class="secondary" id="print" type="button" disabled><i data-lucide="printer"></i> Печать / сохранить в PDF</button><button class="excel-button" id="excel" type="button" disabled><i data-lucide="file-spreadsheet"></i> Выгрузить в Excel</button></div>
+        </aside>
+      </div>
+      <footer><span><i data-lucide="lock-keyhole"></i> Договорные данные остаются в этом браузере</span><span>Расчёт по введённым условиям договора</span></footer>
+    </main>
+  </div>
+  <article id="print-report"></article>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <noscript>Для расчёта включите JavaScript в браузере.</noscript>
+</body>
+</html>

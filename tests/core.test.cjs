@@ -1,0 +1,57 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const {execFileSync}=require('node:child_process');
+const path=require('node:path');
+const C=require('../dist/core.js');
+const R=require('../dist/report.js');
+const ExcelJS=require('exceljs');
+const base=()=>({contractNumber:'Тест',counterparty:'=SUM(A1:A2)',subject:'Тестовый предмет',contractAmount:'1000000',baseType:'contract',rate:'0,1',dueDate:'01.01.2024',endDate:'06.01.2024',endType:'actual',includeEnd:true,mode:'simple',capType:'none',exclusions:[],intervals:[]});
+const calc=patch=>C.calculate({...base(),...patch});
+test('Execution on time or earlier is zero',()=>{for(const endDate of ['01.01.2024','31.12.2023'])for(const includeEnd of [true,false]){const r=calc({endDate,includeEnd});assert.equal(r.calendarDays,0);assert.equal(r.total.toFixed(2),'0.00');}});
+test('One day overdue and endpoint switch',()=>{let r=calc({endDate:'02.01.2024'});assert.equal(r.countedDays,1);assert.equal(r.total.toFixed(2),'1000.00');r=calc({endDate:'02.01.2024',includeEnd:false});assert.equal(r.countedDays,0);assert.equal(r.total.toFixed(2),'0.00');});
+test('Leap February and calendar validation',()=>{const r=calc({dueDate:'28.02.2024',endDate:'01.03.2024'});assert.equal(r.countedDays,2);assert.equal(C.rangesText(r.considered),'29.02.2024 - 01.03.2024');assert.throws(()=>C.parseDate('29.02.2023'));assert.throws(()=>C.parseDate('31.04.2024'));assert.throws(()=>C.parseDate('29.02.1900'));assert.doesNotThrow(()=>C.parseDate('29.02.2000'));});
+test('Overlapping and identical exclusions are counted once',()=>{const r=calc({exclusions:[{start:'02.01.2024',end:'04.01.2024'},{start:'03.01.2024',end:'05.01.2024'},{start:'03.01.2024',end:'05.01.2024'}]});assert.equal(r.excludedDays,4);assert.equal(r.countedDays,1);assert.equal(r.total.toFixed(2),'1000.00');});
+test('Exclusions outside delay have no effect; partial intersection is clipped',()=>{const r=calc({exclusions:[{start:'01.12.2023',end:'01.01.2024'},{start:'07.01.2024',end:'10.01.2024'},{start:'05.01.2024',end:'10.01.2024'}]});assert.equal(r.excludedDays,2);assert.deepEqual(r.entries.map(x=>x.days),[0,0,2]);assert.equal(r.countedDays,3);});
+test('Excluded final date and all-excluded range',()=>{const r=calc({includeEnd:false,exclusions:[{start:'06.01.2024',end:'06.01.2024'}]});assert.equal(r.excludedDays,0);assert.equal(r.countedDays,4);assert.equal(calc({exclusions:[{start:'01.01.2024',end:'10.01.2024'}]}).total.toFixed(2),'0.00');});
+test('Fixed cap is applied to exact total, including zero cap',()=>{const r=calc({capType:'fixed',capAmount:'2000'});assert.equal(r.beforeCap.toString(),'5000');assert.equal(r.total.toFixed(2),'2000.00');assert.equal(r.capApplied,true);assert.equal(calc({capType:'fixed',capAmount:'0'}).total.toFixed(2),'0.00');});
+test('Percentage cap base is independent of accrual base',()=>{const r=calc({baseType:'manual',manualBase:'100000',rate:'1',capType:'percent',capPercent:'0,1',capBaseType:'contract'});assert.equal(r.beforeCap.toString(),'5000');assert.equal(r.cap.toString(),'1000');assert.equal(r.total.toFixed(2),'1000.00');const manual=calc({capType:'percent',capPercent:'10',capBaseType:'manual',capManualBase:'10000'});assert.equal(manual.cap.toString(),'1000');const obligations=calc({capType:'percent',capPercent:'10',capBaseType:'obligations',obligationAmount:'20000'});assert.equal(obligations.cap.toString(),'2000');});
+test('Partial fulfilment changes base and rate, cap is global',()=>{const intervals=[{start:'02.01.2024',end:'04.01.2024',base:'1000000',rate:'0,1'},{start:'05.01.2024',end:'06.01.2024',base:'400000',rate:'0,2'}];const r=calc({mode:'periods',rate:'',intervals,capType:'fixed',capAmount:'4200'});assert.deepEqual(r.rows.map(x=>x.penalty.toString()),['3000','1600']);assert.equal(r.beforeCap.toString(),'4600');assert.equal(r.total.toFixed(2),'4200.00');assert.equal(r.missingDays,0);});
+test('Shared endpoint, nested and overlapping intervals rejected',()=>{for(const second of [{start:'04.01.2024',end:'06.01.2024'},{start:'03.01.2024',end:'03.01.2024'}])assert.throws(()=>calc({mode:'periods',intervals:[{start:'02.01.2024',end:'04.01.2024',base:'1',rate:'1'},{...second,base:'1',rate:'1'}]}),/пересекаются/);});
+test('Missing days warn and remain visible in reports',()=>{const r=calc({mode:'periods',intervals:[{start:'02.01.2024',end:'03.01.2024',base:'1000',rate:'1'},{start:'05.01.2024',end:'06.01.2024',base:'500',rate:'1'}]});assert.equal(r.missingDays,1);assert.equal(r.countedDays,4);assert.match(r.warnings.join(' '),/неполный/);assert.match(R.text(r),/04.01.2024/);assert.match(R.html(r),/Пропущено/);});
+test('An excluded uncovered day does not create an accrual gap',()=>{const r=calc({mode:'periods',intervals:[{start:'02.01.2024',end:'03.01.2024',base:'1000',rate:'1'},{start:'05.01.2024',end:'06.01.2024',base:'500',rate:'1'}],exclusions:[{start:'04.01.2024',end:'04.01.2024'}]});assert.equal(r.missingDays,0);assert.equal(r.calendarDays-r.excludedDays,r.countedDays);});
+test('Intervals outside calculation window are clipped and warned',()=>{const r=calc({mode:'periods',intervals:[{start:'01.12.2023',end:'10.01.2024',base:'1000',rate:'1'}]});assert.equal(r.countedDays,5);assert.equal(r.total.toFixed(2),'50.00');assert.match(r.warnings[0],/не учитываются/);});
+test('Sum first, then round: 0.005 + 0.005 = 0.01',()=>{const r=calc({contractAmount:'0,01',mode:'periods',endDate:'03.01.2024',intervals:[{start:'02.01.2024',end:'02.01.2024',base:'0,01',rate:'50'},{start:'03.01.2024',end:'03.01.2024',base:'0,01',rate:'50'}]});assert.deepEqual(r.rows.map(x=>x.penalty.toString()),['0.005','0.005']);assert.equal(r.total.toFixed(2),'0.01');});
+test('Decimal inputs remain exact beyond Number safe integer',()=>{const r=calc({contractAmount:'999999999999999999,99',rate:'0,00000001',endDate:'02.01.2024'});assert.equal(r.beforeCap.toString(),'99999999.999999999999');assert.equal(r.total.toFixed(2),'100000000.00');});
+test('Cap is applied before final rounding',()=>{const r=calc({contractAmount:'1',rate:'1',endDate:'02.01.2024',capType:'percent',capBaseType:'manual',capManualBase:'1',capPercent:'0,5'});assert.equal(r.limited.toString(),'0.005');assert.equal(r.total.toFixed(2),'0.01');});
+test('Reject missing, negative, scientific, NaN and excessive precision values',()=>{for(const rate of ['', '-1','1e-2','NaN','0,123456789'])assert.throws(()=>calc({rate}),C.ValidationError);assert.throws(()=>calc({contractAmount:'1,001'}),C.ValidationError);assert.doesNotThrow(()=>calc({rate:'0'}));assert.throws(()=>calc({exclusions:[{start:'06.01.2024',end:'02.01.2024'}]}),/раньше начала/);assert.throws(()=>calc({mode:'periods',intervals:[]}),/хотя бы один/);});
+test('Same calendar calculation in UTC, Kazakhstan and DST timezone',()=>{let expected;for(const TZ of ['UTC','Asia/Almaty','America/New_York']){const value=execFileSync(process.execPath,[path.join(__dirname,'date-probe.cjs')],{env:{...process.env,TZ},encoding:'utf8'}).trim();expected??=value;assert.equal(value,expected);}assert.equal(JSON.parse(expected).days,3);});
+test('Report escapes text, includes exclusions, formula, exact sums and fictional marker',()=>{const r=calc({counterparty:'<script>alert(1)</script>',fictional:true,exclusions:[{start:'02.01.2024',end:'02.01.2024',reason:'Согласование',basis:'Акт № 1'}]});const html=R.html(r);assert.ok(!html.includes('<script>'));assert.match(html,/&lt;script&gt;/);assert.match(html,/Все договорные данные вымышлены/);const text=R.text(r);assert.match(text,/Акт № 1/);assert.match(text,/ROUND_HALF_UP/);assert.match(text,/4\s000/);});
+test('Excel template round trip preserves layout, data and literal user text',async()=>{
+  const r=calc({fictional:true,penaltyClause:'Пункт 7.2 учебного договора',exclusions:[{start:'02.01.2024',end:'02.01.2024',reason:'Согласование',basis:'Акт № 1'}]});
+  const wb=await R.workbook(r,ExcelJS),loaded=new ExcelJS.Workbook();await loaded.xlsx.load(await wb.xlsx.writeBuffer());
+  assert.deepEqual(loaded.worksheets.map(x=>x.name),['расчет пени']);const ws=loaded.worksheets[0];
+  assert.equal(ws.getCell('B3').value,'=SUM(A1:A2)');assert.equal(typeof ws.getCell('B3').value,'string');
+  assert.equal(ws.getCell('G14').value,4000);assert.equal(ws.getCell('G8').value.formula,'E8*F8*D8');assert.equal(ws.getCell('G8').value.result,4000);
+  assert.equal(ws.getCell('E8').value,1000000);assert.equal(ws.getCell('F8').value,0.001);assert.equal(ws.getCell('B8').value.toISOString(),'2024-01-01T00:00:00.000Z');assert.equal(ws.getCell('B8').numFmt,'dd"."mm"."yyyy');
+  assert.ok(ws.model.merges.includes('A1:G1'));assert.ok(ws.model.merges.includes('B2:G2'));assert.equal(ws.getColumn(1).width,28.5703125);
+  const text=ws.getSheetValues().flat(2).filter(x=>typeof x==='string').join('\n');assert.match(text,/Акт № 1/);assert.match(text,/УЧЕБНЫЙ ПРИМЕР/);assert.match(text,/Пункт 7.2 учебного договора/);assert.match(text,/ROUND_HALF_UP/);assert.equal(ws.getCell('B4').value,r.raw.subject);assert.match(R.text(r),/Пункт 7.2 учебного договора/);assert.match(R.html(r),/Пункт 7.2 учебного договора/);
+});
+test('Excel cap modes and zero-delay export retain authoritative final result',async()=>{
+  for(const patch of [{},{capType:'fixed',capAmount:'2000'},{capType:'percent',capPercent:'0,1',capBaseType:'contract'},{endDate:'01.01.2024'},{capType:'fixed',capAmount:'0'}]){
+    const r=calc(patch),wb=await R.workbook(r,ExcelJS),ws=wb.worksheets[0];assert.equal(ws.getCell('G14').value,Number(r.total));
+    if(r.cap!==null)assert.equal(ws.getCell('G12').value.result??ws.getCell('G12').value,Number(r.cap));
+    else assert.equal(ws.getCell('E12').value,'Без ограничения');
+  }
+});
+test('Excel partial execution extends rows without summing changing balances',async()=>{
+  const r=calc({mode:'periods',capType:'fixed',capAmount:'4200',intervals:[{start:'02.01.2024',end:'04.01.2024',base:'1000000',rate:'0,1'},{start:'05.01.2024',end:'06.01.2024',base:'400000',rate:'0,2'}]});
+  const ws=(await R.workbook(r,ExcelJS)).worksheets[0];assert.equal(ws.getCell('G15').value,4200);assert.equal(ws.getCell('G10').value.result,4600);assert.equal(ws.getCell('D10').value.result,5);assert.equal(ws.getCell('E10').value,null);assert.equal(ws.getCell('E9').value,400000);assert.match(ws.getCell('B6').value,/Начало интервала/);
+});
+test('Excel exact total is not the cap when accrual is lower than cap',async()=>{
+  const r=calc({capType:'percent',capBaseType:'contract',capPercent:'10'}),ws=(await R.workbook(r,ExcelJS)).worksheets[0];assert.equal(ws.getCell('G12').value.result,100000);assert.equal(ws.getCell('G14').value,5000);
+});
+test('Excel total preserves sum-before-rounding and extreme precision',async()=>{
+  const fractional=calc({contractAmount:'0,01',mode:'periods',endDate:'03.01.2024',intervals:[{start:'02.01.2024',end:'02.01.2024',base:'0,01',rate:'50'},{start:'03.01.2024',end:'03.01.2024',base:'0,01',rate:'50'}]});
+  let ws=(await R.workbook(fractional,ExcelJS)).worksheets[0];assert.equal(ws.getCell('G8').value.result,0.005);assert.equal(ws.getCell('G9').value.result,0.005);assert.equal(ws.getCell('G15').value,0.01);
+  const extreme=calc({contractAmount:'999999999999999999,99',rate:'0,00000001',endDate:'02.01.2024'});ws=(await R.workbook(extreme,ExcelJS)).worksheets[0];assert.equal(ws.getCell('E8').value,'999999999999999999.99');assert.equal(ws.getCell('G8').value,'99999999.999999999999');assert.equal(ws.getCell('G14').value,100000000);
+});

@@ -1,0 +1,16 @@
+{
+  "name": "contract-penalty-calculator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser-local contract penalty calculator",
+  "scripts": {
+    "start": "node scripts/serve.cjs",
+    "test": "node --test tests/core.test.cjs",
+    "test:ui": "node tests/ui.cjs"
+  },
+  "dependencies": {
+    "decimal.js": "10.6.0",
+    "exceljs": "4.4.0",
+    "lucide": "0.468.0"
+  }
+}
